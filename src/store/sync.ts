@@ -3,6 +3,11 @@ import { AteraApiError, type AteraClient } from "../client.js";
 import { MAX_ITEMS_IN_PAGE, type AteraPage } from "../format.js";
 import { ticketToRow, type TicketRow, type TicketStore } from "./db.js";
 
+/** A sync holds the lease this long; renewed on every page. */
+const LEASE_TTL_MS = 3 * 60_000;
+
+export class LeaseLostError extends Error {}
+
 export type SyncOptions = {
   /** Max Atera requests per minute used by the sync (Atera allows ~700 for the whole account). */
   requestsPerMinute: number;
@@ -69,6 +74,7 @@ export class TicketSync {
   private timer: NodeJS.Timeout | null = null;
   private lastRequestAt = 0;
   private lastFailureAt: number | null = null;
+  private readonly owner = randomUUID();
 
   constructor(
     private readonly store: TicketStore,
@@ -89,6 +95,7 @@ export class TicketSync {
   stop(): void {
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
+    this.store.releaseLease(this.owner);
   }
 
   /** Runs whatever is due. Never throws (errors are recorded in the status). */
@@ -96,6 +103,8 @@ export class TicketSync {
     return this.enqueue(async () => {
       const now = this.opts.now();
       if (this.lastFailureAt !== null && now - this.lastFailureAt < this.opts.errorBackoffMs) return;
+      // Another process syncs this index: just read it.
+      if (!this.store.tryLease(this.owner, now, LEASE_TTL_MS)) return;
       const lastFull = toMs(this.store.meta(M.lastFull));
       const lastInc = toMs(this.store.meta(M.lastIncremental));
       const resuming = this.store.meta(M.fullRunId) !== null;
@@ -112,6 +121,7 @@ export class TicketSync {
     if (this.running !== null || this.store.meta(M.lastFull) === null) return;
     const lastInc = toMs(this.store.meta(M.lastIncremental)) ?? 0;
     if (this.opts.now() - lastInc < maxAgeMs) return;
+    if (!this.store.tryLease(this.owner, this.opts.now(), LEASE_TTL_MS)) return;
     await this.enqueue(() => this.guard("incremental", () => this.incrementalRun()));
   }
 
@@ -237,6 +247,9 @@ export class TicketSync {
   }
 
   private async throttled<T>(fn: () => Promise<T>): Promise<T> {
+    if (!this.store.tryLease(this.owner, this.opts.now(), LEASE_TTL_MS)) {
+      throw new LeaseLostError("another process took over the sync of this index");
+    }
     const gap = 60_000 / this.opts.requestsPerMinute;
     const wait = this.lastRequestAt + gap - this.opts.now();
     if (wait > 0) await this.opts.sleep(wait);
@@ -251,6 +264,10 @@ export class TicketSync {
       this.lastFailureAt = null;
       this.store.setMeta(M.lastError, null);
     } catch (err) {
+      if (err instanceof LeaseLostError) {
+        this.opts.log(`${kind} sync stopped: ${err.message}`);
+        return;
+      }
       this.lastFailureAt = this.opts.now();
       const msg = `${kind} sync failed: ${err instanceof Error ? err.message : String(err)}`;
       this.store.setMeta(M.lastError, `${new Date(this.opts.now()).toISOString()} ${msg}`);

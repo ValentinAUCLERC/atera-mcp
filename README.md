@@ -38,11 +38,11 @@ ATERA_API_KEY=your-key npx -y atera-mcp
 }
 ```
 
-Pin a version with `atera-mcp@0.2.0`. Without npm access, the tarball attached to each GitHub release works too, and so does git (slower: it builds on install):
+Pin a version with `atera-mcp@0.2.1`. Without npm access, the tarball attached to each GitHub release works too, and so does git (slower: it builds on install):
 
 ```bash
-npx -y https://github.com/ValentinAUCLERC/atera-mcp/releases/download/v0.2.0/atera-mcp-0.2.0.tgz
-npx -y github:ValentinAUCLERC/atera-mcp#v0.2.0
+npx -y https://github.com/ValentinAUCLERC/atera-mcp/releases/download/v0.2.1/atera-mcp-0.2.1.tgz
+npx -y github:ValentinAUCLERC/atera-mcp#v0.2.1
 ```
 
 ### From source
@@ -167,7 +167,7 @@ Sizing (measured on 40,000 synthetic tickets): ~10 MB on disk, aggregates over t
 
 Examples of questions it answers: tickets per month over the last two years; average and median resolution time per technician in 2025; open tickets per customer; first-response SLA compliance last quarter; oldest open tickets.
 
-The index lives in the MCP process: the server must stay up for periodic syncs to run. Hosts that stop idle MCP servers simply resume the sync at the next start.
+The index lives in the MCP process: the server must stay up for periodic syncs to run. Hosts that stop idle MCP servers simply resume the sync at the next start. If several processes share the same index file (e.g. an old process still running after a configuration change), a lease stored in the database makes sure only one of them syncs; the others just read.
 
 ## Notes and limits
 

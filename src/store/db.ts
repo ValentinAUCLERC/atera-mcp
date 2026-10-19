@@ -209,6 +209,33 @@ export function openStoreWith(db: DatabaseSync) {
       }
     },
 
+    /**
+     * Sync lease: only one process syncs a given index (an orphaned process after a config
+     * change, or two hosts sharing the file). Returns true if `owner` holds the lease until now+ttl.
+     */
+    tryLease(owner: string, now: number, ttlMs: number): boolean {
+      db.exec("BEGIN IMMEDIATE");
+      try {
+        const raw = (getMeta.get("sync_lease") as { value?: string } | undefined)?.value;
+        const lease = raw ? (JSON.parse(raw) as { owner: string; until: number }) : null;
+        if (lease && lease.owner !== owner && lease.until > now) {
+          db.exec("COMMIT");
+          return false;
+        }
+        setMetaStmt.run("sync_lease", JSON.stringify({ owner, until: now + ttlMs }));
+        db.exec("COMMIT");
+        return true;
+      } catch (err) {
+        db.exec("ROLLBACK");
+        throw err;
+      }
+    },
+
+    releaseLease(owner: string): void {
+      const raw = (getMeta.get("sync_lease") as { value?: string } | undefined)?.value;
+      if (raw && (JSON.parse(raw) as { owner: string }).owner === owner) delMeta.run("sync_lease");
+    },
+
     count(): number {
       return (db.prepare("SELECT COUNT(*) AS n FROM tickets").get() as { n: number }).n;
     },

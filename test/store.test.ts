@@ -78,7 +78,7 @@ function setup(initial: Ticket[]) {
       clock += ms;
     },
   });
-  return { atera, store, sync, sleeps, advance: (ms: number) => (clock += ms) };
+  return { atera, store, sync, sleeps, now: () => clock, advance: (ms: number) => (clock += ms) };
 }
 
 describe("parseAteraDate", () => {
@@ -158,6 +158,25 @@ suite("TicketSync", () => {
     await sync.tick();
     expect(store.query("ORDER BY id", []).map((r) => r.id)).toEqual([1, 3]);
     expect(atera.calls).toContain("/api/v3/tickets/2?");
+  });
+
+  it("lets only one process sync a shared index", async () => {
+    const a = setup([ticket(1), ticket(2)]);
+    const client = new AteraClient(
+      { apiKey: "k", baseUrl: "https://atera.test/api/v3", timeoutMs: 1000 },
+      a.atera.fetchImpl,
+      async () => {},
+    );
+    // Second process on the same database.
+    const other = new TicketSync(a.store, client, { log: () => {}, now: a.now, sleep: async () => {} });
+    await a.sync.tick();
+    const calls = a.atera.calls.length;
+    await other.tick();
+    expect(a.atera.calls.length).toBe(calls);
+    a.sync.stop(); // releases the lease
+    a.advance(61 * 60_000);
+    await other.tick();
+    expect(a.atera.calls.length).toBeGreaterThan(calls);
   });
 
   it("freshen() runs an incremental when the data is stale", async () => {
