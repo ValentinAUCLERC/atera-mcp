@@ -1,7 +1,13 @@
 import { z } from "zod";
 import type { AteraClient } from "../client.js";
 import type { Toolset } from "../config.js";
+import type { TicketStore } from "../store/db.js";
+import type { TicketSync } from "../store/sync.js";
 import { MAX_ITEMS_IN_PAGE } from "../format.js";
+
+/** Local ticket index, present only when ATERA_CACHE_DIR is set. */
+export type StatsContext = { store: TicketStore; sync: TicketSync; timeZone: string };
+export type ToolContext = { stats: StatsContext | null };
 
 /** read = no side effect, write = create/update, delete = irreversible removal. */
 export type ToolAccess = "read" | "write" | "delete";
@@ -15,7 +21,9 @@ export type ToolDefinition = {
   /** Updating the same thing twice gives the same result (PUT-like). */
   idempotent?: boolean;
   input: z.ZodRawShape;
-  handler: (args: any, client: AteraClient) => Promise<unknown>;
+  /** Only registered when the local ticket index is enabled. */
+  needsIndex?: boolean;
+  handler: (args: any, client: AteraClient, ctx: ToolContext) => Promise<unknown>;
 };
 
 export function defineTool<S extends z.ZodRawShape>(def: {
@@ -25,8 +33,9 @@ export function defineTool<S extends z.ZodRawShape>(def: {
   toolset: Toolset;
   access: ToolAccess;
   idempotent?: boolean;
+  needsIndex?: boolean;
   input: S;
-  handler: (args: z.infer<z.ZodObject<S>>, client: AteraClient) => Promise<unknown>;
+  handler: (args: z.infer<z.ZodObject<S>>, client: AteraClient, ctx: ToolContext) => Promise<unknown>;
 }): ToolDefinition {
   return def as ToolDefinition;
 }

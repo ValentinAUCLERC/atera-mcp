@@ -10,12 +10,13 @@ export type AteraPage<T = Record<string, unknown>> = {
   nextLink?: string | null;
 };
 
+/** Metadata first: if a client cuts a long result, the paging info survives. */
 export type ListResult = {
-  items: unknown[];
   page: number;
   totalPages: number | null;
   totalItems: number | null;
   hasMore: boolean;
+  items: unknown[];
 };
 
 export const MAX_ITEMS_IN_PAGE = 50;
@@ -69,11 +70,11 @@ export function toListResult(
   const current = page?.page ?? requestedPage;
   const totalPages = typeof page?.totalPages === "number" ? page.totalPages : null;
   return {
-    items: items.map((item) => (fields ? summarize(item, fields) : compact(item))),
     page: current,
     totalPages,
     totalItems: typeof page?.totalItemCount === "number" ? page.totalItemCount : null,
     hasMore: totalPages !== null ? current < totalPages : Boolean(page?.nextLink),
+    items: items.map((item) => (fields ? summarize(item, fields) : compact(item))),
   };
 }
 
@@ -99,11 +100,11 @@ export async function listPage(
 }
 
 export type ScanResult = {
-  items: unknown[];
   scannedPages: number;
   totalPages: number | null;
   /** True when the scan stopped before the last page: there may be more matches. */
   truncated: boolean;
+  items: unknown[];
 };
 
 /**
@@ -150,10 +151,10 @@ export async function scanPages(
     page++;
   }
   return {
-    items: matches,
     scannedPages: scanned,
     totalPages,
     truncated: !reachedEnd,
+    items: matches,
   };
 }
 
@@ -172,4 +173,34 @@ export function definedOnly<T extends Record<string, unknown>>(obj: T): Partial<
     if (v !== undefined) (out as Record<string, unknown>)[k] = v;
   }
   return out;
+}
+
+/**
+ * Serialises a tool result within `maxChars`. When too long, items are dropped from the end
+ * of the `items` array and the result says so, instead of letting the client cut the JSON.
+ */
+export function serializeResult(data: unknown, maxChars: number): string {
+  const text = JSON.stringify(data ?? { ok: true });
+  if (text.length <= maxChars) return text;
+  if (data && typeof data === "object" && Array.isArray((data as { items?: unknown }).items)) {
+    const obj = { ...(data as Record<string, unknown>) };
+    const items = [...(obj.items as unknown[])];
+    const total = items.length;
+    let lo = 0;
+    let hi = total;
+    // Binary search for the largest prefix that fits.
+    while (lo < hi) {
+      const mid = Math.ceil((lo + hi) / 2);
+      const candidate = JSON.stringify({ ...obj, itemsOmitted: total - mid, items: items.slice(0, mid) });
+      if (candidate.length <= maxChars) lo = mid;
+      else hi = mid - 1;
+    }
+    const note = `Result too large: only the first ${lo} of ${total} items are shown. Ask for fewer items (itemsInPage/limit) or a summary.`;
+    return JSON.stringify({ ...obj, itemsOmitted: total - lo, note, items: items.slice(0, lo) });
+  }
+  return JSON.stringify({
+    truncated: true,
+    note: "Result too large and cut. Narrow the request (filters, fewer items, full=false).",
+    partial: text.slice(0, Math.max(0, maxChars - 200)),
+  });
 }

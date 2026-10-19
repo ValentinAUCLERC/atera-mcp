@@ -2,17 +2,20 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { AteraApiError, AteraClient } from "./client.js";
 import type { AccessLevel, Config } from "./config.js";
+import { serializeResult } from "./format.js";
 import { agentTools, alertTools } from "./tools/agents.js";
-import type { ToolAccess, ToolDefinition } from "./tools/common.js";
+import type { ToolAccess, ToolContext, ToolDefinition } from "./tools/common.js";
 import { contactTools, customerTools } from "./tools/customers.js";
 import { otherTools } from "./tools/other.js";
+import { statsTools } from "./tools/stats.js";
 import { ticketTools } from "./tools/tickets.js";
 
 export const SERVER_NAME = "atera-mcp";
-export const SERVER_VERSION = "0.1.1";
+export const SERVER_VERSION = "0.2.0";
 
 export const ALL_TOOLS: readonly ToolDefinition[] = [
   ...ticketTools,
+  ...statsTools,
   ...customerTools,
   ...contactTools,
   ...agentTools,
@@ -26,22 +29,33 @@ const ALLOWED: Record<AccessLevel, ReadonlySet<ToolAccess>> = {
   full: new Set(["read", "write", "delete"]),
 };
 
-export function selectTools(config: Pick<Config, "access" | "toolsets">): ToolDefinition[] {
+export function selectTools(config: Pick<Config, "access" | "toolsets" | "index">): ToolDefinition[] {
   return ALL_TOOLS.filter(
-    (tool) => ALLOWED[config.access].has(tool.access) && config.toolsets.has(tool.toolset),
+    (tool) =>
+      ALLOWED[config.access].has(tool.access) &&
+      config.toolsets.has(tool.toolset) &&
+      (!tool.needsIndex || config.index !== null),
   );
 }
 
-const INSTRUCTIONS = `Atera RMM/PSA (API v3).
+const BASE_INSTRUCTIONS = `Atera RMM/PSA (API v3).
 - IDs: find a customer with find_customers, a contact with find_contacts, a machine with find_agents or get_agent_by_machine, then use the numeric IDs in other tools.
 - List tools return a summary and are paginated (page, itemsInPage ≤ 50, hasMore). Pass full=true only when you need every field.
 - find_* tools scan pages client-side: if "truncated" is true, there may be more matches beyond the scanned pages.
 - Create, update, comment and delete tools change real customer data: use them only when the user explicitly asks.`;
 
-export function createServer(config: Config, client = new AteraClient(config)): McpServer {
+const INDEX_INSTRUCTIONS = `
+- Counts, trends, rankings, averages and SLA over tickets: use ticket_stats (it covers all tickets). Never compute statistics by paging list_tickets.
+- search_tickets filters by dates, technician, end user or title over all tickets. Mention index.dataAsOf when you give figures.`;
+
+export function createServer(
+  config: Config,
+  client = new AteraClient(config),
+  ctx: ToolContext = { stats: null },
+): McpServer {
   const server = new McpServer(
     { name: SERVER_NAME, version: SERVER_VERSION },
-    { instructions: INSTRUCTIONS },
+    { instructions: config.index ? BASE_INSTRUCTIONS + INDEX_INSTRUCTIONS : BASE_INSTRUCTIONS },
   );
 
   for (const tool of selectTools(config)) {
@@ -59,7 +73,7 @@ export function createServer(config: Config, client = new AteraClient(config)): 
           openWorldHint: true,
         },
       },
-      async (args: Record<string, unknown>) => runTool(tool, args, client),
+      async (args: Record<string, unknown>) => runTool(tool, args, client, ctx, config.maxResultChars),
     );
   }
   return server;
@@ -69,10 +83,12 @@ export async function runTool(
   tool: ToolDefinition,
   args: Record<string, unknown>,
   client: AteraClient,
+  ctx: ToolContext = { stats: null },
+  maxResultChars = 25_000,
 ): Promise<CallToolResult> {
   try {
-    const data = await tool.handler(args ?? {}, client);
-    return { content: [{ type: "text", text: JSON.stringify(data ?? { ok: true }) }] };
+    const data = await tool.handler(args ?? {}, client, ctx);
+    return { content: [{ type: "text", text: serializeResult(data, maxResultChars) }] };
   } catch (err) {
     return { isError: true, content: [{ type: "text", text: JSON.stringify(errorEnvelope(err)) }] };
   }

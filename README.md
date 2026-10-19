@@ -2,7 +2,8 @@
 
 A clean, read-only-by-default [MCP](https://modelcontextprotocol.io) server for the [Atera](https://www.atera.com) RMM/PSA API v3.
 
-- **47 tools** over tickets, customers, contacts, agents (devices), alerts, contracts, knowledge base, billing, custom fields, network devices, departments and rates.
+- **Ticket statistics over your whole history** (optional): a local SQLite index kept in sync with Atera answers counts, trends, rankings, resolution/first-response times and SLA compliance in milliseconds, over tens of thousands of tickets. See [Ticket index and statistics](#ticket-index-and-statistics).
+- **50 tools** over tickets, customers, contacts, agents (devices), alerts, contracts, knowledge base, billing, custom fields, network devices, departments and rates.
 - **Every tool is listed from the first `tools/list`.** No "navigate first" step, no hidden state: works with any MCP host, including gateways and shared/pooled processes.
 - **Safe by default:** read-only unless you opt in with `ATERA_ACCESS=write` or `full`. Tools carry MCP annotations (`readOnlyHint`, `destructiveHint`, `idempotentHint`).
 - **Small outputs:** list tools return a summary of each item (`full=true` for every field), null/empty fields are stripped, pages are capped at 50 items.
@@ -12,7 +13,7 @@ A clean, read-only-by-default [MCP](https://modelcontextprotocol.io) server for 
 
 ## Quick start
 
-You need Node.js 20+ and an Atera API key (Atera → **Admin → API**). Prefer a key with **read** permissions only, unless you enable write tools.
+You need Node.js 20+ (22.13+ for the ticket index) and an Atera API key (Atera → **Admin → API**). Prefer a key with **read** permissions only, unless you enable write tools.
 
 ```bash
 ATERA_API_KEY=your-key npx -y atera-mcp
@@ -37,11 +38,11 @@ ATERA_API_KEY=your-key npx -y atera-mcp
 }
 ```
 
-Pin a version with `atera-mcp@0.1.1`. Without npm access, the tarball attached to each GitHub release works too, and so does git (slower: it builds on install):
+Pin a version with `atera-mcp@0.2.0`. Without npm access, the tarball attached to each GitHub release works too, and so does git (slower: it builds on install):
 
 ```bash
-npx -y https://github.com/ValentinAUCLERC/atera-mcp/releases/download/v0.1.1/atera-mcp-0.1.1.tgz
-npx -y github:ValentinAUCLERC/atera-mcp#v0.1.1
+npx -y https://github.com/ValentinAUCLERC/atera-mcp/releases/download/v0.2.0/atera-mcp-0.2.0.tgz
+npx -y github:ValentinAUCLERC/atera-mcp#v0.2.0
 ```
 
 ### From source
@@ -59,9 +60,15 @@ ATERA_API_KEY=your-key node dist/index.js
 | Variable | Default | Description |
 |---|---|---|
 | `ATERA_API_KEY` | — (required) | Atera API key. JWT tokens are sent as `Authorization: Bearer`, older keys as `X-API-KEY`. |
-| `ATERA_ACCESS` | `read` | `read` = read tools only (32), `write` = + create/update/comment/resolve (42), `full` = + delete (47). |
-| `ATERA_TOOLSETS` | all | Comma-separated subset to expose fewer tools: `account, customers, contacts, agents, alerts, tickets, contracts, knowledge, billing, customfields, devices, departments, rates`. |
+| `ATERA_ACCESS` | `read` | `read` = read tools only (32, +3 stats tools with the index), `write` = + create/update/comment/resolve (+10), `full` = + delete (+5). |
+| `ATERA_TOOLSETS` | all | Comma-separated subset to expose fewer tools: `account, customers, contacts, agents, alerts, tickets, stats, contracts, knowledge, billing, customfields, devices, departments, rates`. |
 | `ATERA_TIMEOUT_MS` | `30000` | Timeout of one HTTP call to Atera. |
+| `ATERA_MAX_RESULT_CHARS` | `25000` | Max size of one tool result. Longer lists are trimmed (whole items, with `itemsOmitted`) instead of being cut mid-JSON by the client. |
+| `ATERA_CACHE_DIR` | — (disabled) | Enables the local ticket index and the `stats` tools. Directory for the SQLite file (one file per Atera account). Needs Node.js 22.13+. |
+| `ATERA_TIMEZONE` | `UTC` | IANA time zone used for date filters and day/week/month grouping, e.g. `Europe/Paris`. |
+| `ATERA_SYNC_RPM` | `300` | Max Atera requests per minute used by the index sync (capped at 600; Atera allows ~700 for the whole account). |
+| `ATERA_SYNC_INTERVAL_MIN` | `5` | Incremental sync period (tickets modified since the last sync). |
+| `ATERA_SYNC_FULL_MIN` | `60` | Full reconciliation period (re-reads every ticket, removes deleted ones). |
 | `ATERA_BASE_URL` | `https://app.atera.com/api/v3` | API base URL (tests, proxies). |
 
 Example for a helpdesk assistant that only needs tickets and who's who:
@@ -86,6 +93,9 @@ Access: **R** read, **W** write (create/update), **D** delete. W tools need `ATE
 | tickets | `update_ticket` | W | Status, priority, impact, type, title, technician |
 | tickets | `add_ticket_comment` | W | Technician comment, internal by default |
 | tickets | `delete_ticket` | D | Delete a ticket |
+| stats | `ticket_stats` | R | Counts, open/resolved, resolution & first-response times, SLA %, work hours; grouped by status, priority, type, source, customer, technician, end user or period (needs the index) |
+| stats | `search_tickets` | R | Tickets filtered by date ranges, technician, end user, title, several statuses (needs the index) |
+| stats | `ticket_index_status` | R | Index state: tickets indexed, last syncs, progress, last error (needs the index) |
 | customers | `list_customers` | R | Customers (summary) |
 | customers | `find_customers` | R | Search by name, domain or business number |
 | customers | `get_customer` | R | Full customer |
@@ -141,9 +151,27 @@ Errors (`isError: true`):
 
 `code` is one of `invalid_argument`, `unauthorized`, `forbidden`, `not_found`, `rate_limited`, `upstream_error`, `network_error`.
 
+## Ticket index and statistics
+
+Atera's API returns at most 50 tickets per call and can only filter tickets by status and customer. Computing statistics by paging through the API from a chat is slow, expensive in tokens and gives wrong numbers. With `ATERA_CACHE_DIR` set, the server keeps a local SQLite copy of every ticket's **metadata** (no comment text) and answers statistics from it.
+
+How it stays up to date:
+
+1. **Initial build**, in the background on first start: walks every page of `/tickets` at `ATERA_SYNC_RPM`. 40,000 tickets = 800 requests ≈ 3 minutes at the default rate. It is resumable: if the process stops, it continues from the last page. Until it completes, the stats tools answer "index being built (page x / y)" instead of failing.
+2. **Incremental sync** every `ATERA_SYNC_INTERVAL_MIN`: `/tickets/lastmodified` since the last sync (with a 10-minute overlap). Usually 1 request. A stale index is also refreshed just before answering a question.
+3. **Full reconciliation** every `ATERA_SYNC_FULL_MIN`: re-reads everything, which also refreshes fields that do not bump the modification date. A ticket missing from the run is removed only after Atera confirms it is gone (HTTP 404).
+
+After a restart the index is read from disk and caught up incrementally, so keep `ATERA_CACHE_DIR` on persistent storage (a Docker volume). Every answer includes `index.dataAsOf`, the time of the last successful sync.
+
+Sizing (measured on 40,000 synthetic tickets): ~10 MB on disk, aggregates over the whole index in under a second, results of a few KB.
+
+Examples of questions it answers: tickets per month over the last two years; average and median resolution time per technician in 2025; open tickets per customer; first-response SLA compliance last quarter; oldest open tickets.
+
+The index lives in the MCP process: the server must stay up for periodic syncs to run. Hosts that stop idle MCP servers simply resume the sync at the next start.
+
 ## Notes and limits
 
-- Atera allows about 700 requests per minute per account. `find_*` tools cost one request per scanned page (10 by default, 40 max).
+- Atera allows about 700 requests per minute per account. `find_*` tools cost one request per scanned page (10 by default, 40 max). The index sync stays under `ATERA_SYNC_RPM`.
 - Updates use Atera's partial update endpoints: only the fields you pass are sent.
 - The API key never appears in tool results or logs. Logs go to stderr (stdout is the MCP channel).
 - Endpoints and payloads follow Atera's published Swagger for API v3. Some write payloads (ticket comments in particular) are not precisely documented by Atera: if one of them misbehaves on your account, please open an issue with the error envelope.

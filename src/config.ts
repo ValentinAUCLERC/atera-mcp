@@ -12,6 +12,7 @@ export const TOOLSETS = [
   "devices",
   "departments",
   "rates",
+  "stats",
 ] as const;
 
 export type Toolset = (typeof TOOLSETS)[number];
@@ -30,6 +31,18 @@ export type Config = {
   timeoutMs: number;
   access: AccessLevel;
   toolsets: ReadonlySet<Toolset>;
+  /** Max characters of one tool result (lists are trimmed to fit). */
+  maxResultChars: number;
+  /** Local ticket index for stats; null = disabled. */
+  index: IndexConfig | null;
+};
+
+export type IndexConfig = {
+  cacheDir: string;
+  timeZone: string;
+  requestsPerMinute: number;
+  incrementalMinutes: number;
+  fullMinutes: number;
 };
 
 export const DEFAULT_BASE_URL = "https://app.atera.com/api/v3";
@@ -59,6 +72,25 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   }
 
   const baseUrl = (env.ATERA_BASE_URL ?? DEFAULT_BASE_URL).trim().replace(/\/+$/, "");
+  const maxResultChars = positive(env, "ATERA_MAX_RESULT_CHARS", 25_000);
+
+  const cacheDir = (env.ATERA_CACHE_DIR ?? "").trim();
+  let index: IndexConfig | null = null;
+  if (cacheDir !== "") {
+    const timeZone = (env.ATERA_TIMEZONE ?? "UTC").trim();
+    try {
+      new Intl.DateTimeFormat("en-US", { timeZone });
+    } catch {
+      throw new ConfigError(`ATERA_TIMEZONE "${timeZone}" is not a valid IANA time zone (e.g. Europe/Paris).`);
+    }
+    index = {
+      cacheDir,
+      timeZone,
+      requestsPerMinute: Math.min(positive(env, "ATERA_SYNC_RPM", 300), 600),
+      incrementalMinutes: positive(env, "ATERA_SYNC_INTERVAL_MIN", 5),
+      fullMinutes: positive(env, "ATERA_SYNC_FULL_MIN", 60),
+    };
+  }
 
   return {
     apiKey,
@@ -66,7 +98,17 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     timeoutMs,
     access: access as AccessLevel,
     toolsets,
+    maxResultChars,
+    index,
   };
+}
+
+function positive(env: NodeJS.ProcessEnv, name: string, fallback: number): number {
+  const raw = env[name];
+  if (raw === undefined || raw.trim() === "") return fallback;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) throw new ConfigError(`${name} must be a positive number (got "${raw}").`);
+  return n;
 }
 
 function parseToolsets(raw: string | undefined): ReadonlySet<Toolset> {

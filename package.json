@@ -1,6 +1,6 @@
 {
   "name": "atera-mcp",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "MCP server for the Atera RMM/PSA API v3: tickets, customers, contacts, agents, alerts, contracts, billing and more. Read-only by default.",
   "license": "MIT",
   "author": "Valentin AUCLERC",

@@ -71,7 +71,15 @@ describe("tool catalogue", () => {
     expect(write.some((t) => t.access === "delete")).toBe(false);
 
     const full = selectTools({ ...base, access: "full" });
-    expect(full.length).toBe(ALL_TOOLS.length);
+    expect(full.length).toBe(ALL_TOOLS.filter((t) => !t.needsIndex).length);
+    expect(full.some((t) => t.toolset === "stats")).toBe(false);
+
+    const withIndex = selectTools({
+      ...base,
+      access: "full",
+      index: { cacheDir: "/tmp/x", timeZone: "UTC", requestsPerMinute: 300, incrementalMinutes: 5, fullMinutes: 60 },
+    });
+    expect(withIndex.length).toBe(ALL_TOOLS.length);
 
     const ticketsOnly = selectTools({ ...base, toolsets: new Set(["tickets"]) });
     expect(ticketsOnly.every((t) => t.toolset === "tickets")).toBe(true);
@@ -204,5 +212,95 @@ describe("MCP server", () => {
     const { data } = await call(client, "list_alerts", { status: "Open", severity: "Critical" });
     expect(data.items).toEqual([{ AlertID: 1, Severity: "Critical", Title: "Disk" }]);
     expect(calls[0]!.url.searchParams.get("alertStatus")).toBe("Open");
+  });
+});
+
+describe("result size", () => {
+  it("drops trailing items instead of cutting the JSON", async () => {
+    const big = Array.from({ length: 50 }, (_, i) => ({ TicketID: i, TicketTitle: "x".repeat(250) }));
+    const { client } = await connect({ ATERA_MAX_RESULT_CHARS: "5000" }, () => ({ items: big, page: 1, totalPages: 9 }));
+    const { data } = await call(client, "list_tickets", {});
+    expect(data.hasMore).toBe(true);
+    expect(data.items.length).toBeGreaterThan(0);
+    expect(data.items.length).toBeLessThan(50);
+    expect(data.itemsOmitted).toBe(50 - data.items.length);
+    expect(data.note).toMatch(/only the first/);
+  });
+});
+
+const [nodeMajor, nodeMinor] = process.versions.node.split(".").map(Number) as [number, number];
+describe.skipIf(nodeMajor < 22 || (nodeMajor === 22 && nodeMinor < 13))("stats tools", () => {
+  async function connectWithIndex(tickets: Record<string, unknown>[], build = true) {
+    const { DatabaseSync } = await import("node:sqlite");
+    const { openStoreWith } = await import("../src/store/db.js");
+    const { TicketSync } = await import("../src/store/sync.js");
+    const config = loadConfig({
+      ATERA_API_KEY: "k",
+      ATERA_BASE_URL: "https://atera.test/api/v3",
+      ATERA_CACHE_DIR: "/unused",
+      ATERA_TIMEZONE: "Europe/Paris",
+    });
+    const fake = fakeAtera((url) => {
+      if (url.pathname.endsWith("/tickets")) return { items: tickets, page: 1, totalPages: 1 };
+      return { items: [], page: 1, totalPages: 1 };
+    });
+    const ateraClient = new AteraClient(config, fake.fetchImpl, async () => {});
+    const store = openStoreWith(new DatabaseSync(":memory:"));
+    const sync = new TicketSync(store, ateraClient, { log: () => {}, sleep: async () => {} });
+    if (build) await sync.tick();
+    const server = createServer(config, ateraClient, { stats: { store, sync, timeZone: "Europe/Paris" } });
+    const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
+    const client = new Client({ name: "test", version: "1.0.0" });
+    await Promise.all([server.connect(serverSide), client.connect(clientSide)]);
+    clients.push(client);
+    return { client, ...fake };
+  }
+
+  const tickets = [
+    { TicketID: 1, TicketTitle: "VPN", TicketStatus: "Resolved", CustomerID: 1, CustomerName: "ACME", TechnicianContactID: 7, TechnicianFullName: "Jean", TicketCreatedDate: "2026-09-01T08:00:00", TicketResolvedDate: "2026-09-01T12:00:00" },
+    { TicketID: 2, TicketTitle: "Printer", TicketStatus: "Open", CustomerID: 1, CustomerName: "ACME", TechnicianContactID: 8, TechnicianFullName: "Paul", TicketCreatedDate: "2026-09-15T08:00:00" },
+    { TicketID: 3, TicketTitle: "Mail", TicketStatus: "Open", CustomerID: 2, CustomerName: "Globex", TicketCreatedDate: "2026-10-02T08:00:00" },
+  ];
+
+  it("ticket_stats groups the whole index", async () => {
+    const { client } = await connectWithIndex(tickets);
+    const { isError, data } = await call(client, "ticket_stats", { groupBy: "customer" });
+    expect(isError).toBe(false);
+    expect(data.index).toMatchObject({ ticketsIndexed: 3, timeZone: "Europe/Paris" });
+    expect(data.index.dataAsOf).toBeTruthy();
+    expect(data.total).toMatchObject({ count: 3, open: 2, resolved: 1, resolutionHours: { avg: 4, median: 4, p90: 4 } });
+    expect(data.groups[0]).toMatchObject({ key: "1", label: "ACME", count: 2 });
+  });
+
+  it("ticket_stats filters by month and status list", async () => {
+    const { client } = await connectWithIndex(tickets);
+    const { data } = await call(client, "ticket_stats", { createdFrom: "2026-09", createdTo: "2026-09", status: ["open", "resolved"] });
+    expect(data.total.count).toBe(2);
+    expect(data.groups).toBeUndefined();
+  });
+
+  it("search_tickets pages and sorts over the index", async () => {
+    const { client } = await connectWithIndex(tickets);
+    const { data } = await call(client, "search_tickets", { open: true, sort: "created_asc", limit: 1 });
+    expect(data.totalMatches).toBe(2);
+    expect(data.hasMore).toBe(true);
+    expect(data.items).toEqual([expect.objectContaining({ TicketID: 2, TicketTitle: "Printer", open: true })]);
+  });
+
+  it("says the index is still building instead of failing", async () => {
+    const { client } = await connectWithIndex(tickets, false);
+    const { isError, data } = await call(client, "ticket_stats", {});
+    expect(isError).toBe(false);
+    expect(data.indexReady).toBe(false);
+    expect(data.message).toMatch(/being built/);
+  });
+
+  it("stats tools are listed only when the index is enabled", async () => {
+    const { client } = await connect({}, () => ({}));
+    const { tools } = await client.listTools();
+    expect(tools.map((t) => t.name)).not.toContain("ticket_stats");
+    const indexed = await connectWithIndex(tickets);
+    const names = (await indexed.client.listTools()).tools.map((t) => t.name);
+    expect(names).toEqual(expect.arrayContaining(["ticket_stats", "search_tickets", "ticket_index_status"]));
   });
 });
