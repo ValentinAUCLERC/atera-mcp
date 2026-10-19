@@ -1,0 +1,48 @@
+{
+  "name": "atera-mcp",
+  "version": "0.1.0",
+  "description": "MCP server for the Atera RMM/PSA API v3: tickets, customers, contacts, agents, alerts, contracts, billing and more. Read-only by default.",
+  "license": "MIT",
+  "author": "Valentin AUCLERC",
+  "type": "module",
+  "bin": {
+    "atera-mcp": "dist/index.js"
+  },
+  "main": "dist/server.js",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ValentinAUCLERC/atera-mcp.git"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "atera",
+    "rmm",
+    "psa",
+    "msp"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "start": "node dist/index.js",
+    "prepare": "npm run build"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.1",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "typescript": "^5.9.3",
+    "vitest": "^5.0.5"
+  }
+}
