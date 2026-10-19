@@ -15,8 +15,10 @@ A clean, read-only-by-default [MCP](https://modelcontextprotocol.io) server for 
 You need Node.js 20+ and an Atera API key (Atera → **Admin → API**). Prefer a key with **read** permissions only, unless you enable write tools.
 
 ```bash
-ATERA_API_KEY=your-key npx -y https://github.com/ValentinAUCLERC/atera-mcp/releases/download/v0.1.0/atera-mcp-0.1.0.tgz
+ATERA_API_KEY=your-key npx -y atera-mcp
 ```
+
+[![npm](https://img.shields.io/npm/v/atera-mcp)](https://www.npmjs.com/package/atera-mcp)
 
 ### Claude Desktop / Claude Code / Cursor
 
@@ -25,7 +27,7 @@ ATERA_API_KEY=your-key npx -y https://github.com/ValentinAUCLERC/atera-mcp/relea
   "mcpServers": {
     "atera": {
       "command": "npx",
-      "args": ["-y", "https://github.com/ValentinAUCLERC/atera-mcp/releases/download/v0.1.0/atera-mcp-0.1.0.tgz"],
+      "args": ["-y", "atera-mcp"],
       "env": {
         "ATERA_API_KEY": "your-key",
         "ATERA_ACCESS": "read"
@@ -35,10 +37,11 @@ ATERA_API_KEY=your-key npx -y https://github.com/ValentinAUCLERC/atera-mcp/relea
 }
 ```
 
-Installing straight from git also works (slower: it builds on install):
+Pin a version with `atera-mcp@0.1.1`. Without npm access, the tarball attached to each GitHub release works too, and so does git (slower: it builds on install):
 
 ```bash
-npx -y github:ValentinAUCLERC/atera-mcp#v0.1.0
+npx -y https://github.com/ValentinAUCLERC/atera-mcp/releases/download/v0.1.1/atera-mcp-0.1.1.tgz
+npx -y github:ValentinAUCLERC/atera-mcp#v0.1.1
 ```
 
 ### From source
@@ -156,7 +159,7 @@ npm run build
 
 Tests mock `fetch` and drive the real MCP server through an in-memory transport, so they need no Atera account.
 
-Releases: push a `vX.Y.Z` tag; the release workflow builds, tests and attaches `atera-mcp-X.Y.Z.tgz` to the GitHub release.
+Releases: push a `vX.Y.Z` tag; the release workflow builds, tests, publishes to npm (trusted publishing, with provenance) and attaches `atera-mcp-X.Y.Z.tgz` to the GitHub release.
 
 ## License
 

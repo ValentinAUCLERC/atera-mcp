@@ -6,6 +6,8 @@ on:
 
 permissions:
   contents: write
+  # npm trusted publishing (OIDC) + provenance
+  id-token: write
 
 jobs:
   release:
@@ -17,6 +19,9 @@ jobs:
         with:
           node-version: 22
           cache: npm
+          registry-url: https://registry.npmjs.org
+      # Trusted publishing needs npm >= 11.5
+      - run: npm install -g npm@latest
       - run: npm ci
       - run: npm run typecheck
       - run: npm test
@@ -26,6 +31,11 @@ jobs:
           [ "v${version}" = "${GITHUB_REF_NAME}" ] || { echo "Tag ${GITHUB_REF_NAME} != package.json v${version}"; exit 1; }
       - name: Pack
         run: npm pack
+      - name: Publish to npm
+        # OIDC trusted publishing when configured on npmjs.com; NPM_TOKEN secret as fallback.
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish ./atera-mcp-*.tgz --access public --provenance
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
