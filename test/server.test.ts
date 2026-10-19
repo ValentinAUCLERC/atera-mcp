@@ -77,7 +77,7 @@ describe("tool catalogue", () => {
     const withIndex = selectTools({
       ...base,
       access: "full",
-      index: { cacheDir: "/tmp/x", timeZone: "UTC", requestsPerMinute: 300, incrementalMinutes: 5, fullMinutes: 60 },
+      index: { cacheDir: "/tmp/x", timeZone: "UTC", requestsPerMinute: 300, incrementalMinutes: 5, fullMinutes: 60, requestTimeoutMs: 120_000 },
     });
     expect(withIndex.length).toBe(ALL_TOOLS.length);
 

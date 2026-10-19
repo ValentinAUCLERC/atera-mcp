@@ -7,6 +7,10 @@ export type QueryValue = string | number | boolean | undefined | null;
 export type RequestOptions = {
   query?: Record<string, QueryValue>;
   body?: unknown;
+  /** Overrides the client timeout (whole request, body included). */
+  timeoutMs?: number;
+  /** Max retries for this request (default 2). */
+  retries?: number;
 };
 
 export type FetchLike = (input: string, init: RequestInit) => Promise<Response>;
@@ -70,8 +74,12 @@ export class AteraClient {
       : { "X-API-KEY": config.apiKey };
   }
 
-  get<T = unknown>(path: string, query?: Record<string, QueryValue>): Promise<T> {
-    return this.request<T>("GET", path, { query });
+  get<T = unknown>(
+    path: string,
+    query?: Record<string, QueryValue>,
+    options: Pick<RequestOptions, "timeoutMs" | "retries"> = {},
+  ): Promise<T> {
+    return this.request<T>("GET", path, { ...options, query });
   }
 
   post<T = unknown>(path: string, body?: unknown): Promise<T> {
@@ -102,15 +110,20 @@ export class AteraClient {
       body = JSON.stringify(options.body);
     }
 
+    const maxRetries = options.retries ?? MAX_RETRIES;
+    const timeoutMs = options.timeoutMs ?? this.config.timeoutMs;
     for (let attempt = 0; ; attempt++) {
       let response: Response;
+      let parsed: unknown;
       try {
+        // The timeout covers the body too: a slow download must not hang forever.
         response = await this.fetchImpl(url, {
           method,
           headers,
           body,
-          signal: AbortSignal.timeout(this.config.timeoutMs),
+          signal: AbortSignal.timeout(timeoutMs),
         });
+        if (response.ok) parsed = await parseBody(response);
       } catch (err) {
         const error = new AteraApiError(
           0,
@@ -119,20 +132,20 @@ export class AteraClient {
           true,
         );
         // A write may have reached Atera before the connection dropped: never replay it.
-        if (method === "GET" && attempt < MAX_RETRIES) {
+        if (method === "GET" && attempt < maxRetries) {
           await this.sleep(backoffMs(attempt));
           continue;
         }
         throw error;
       }
 
-      if (response.ok) return (await parseBody(response)) as T;
+      if (response.ok) return parsed as T;
 
       const { code, retryable } = classifyStatus(response.status);
       // 429 means the request was rejected before processing, so it is safe to replay
       // for every method; 5xx is only replayed for idempotent reads.
       const canRetry =
-        attempt < MAX_RETRIES &&
+        attempt < maxRetries &&
         (response.status === 429 || (method === "GET" && response.status >= 500));
       if (canRetry) {
         await this.sleep(retryAfterMs(response) ?? backoffMs(attempt));
@@ -198,7 +211,9 @@ function backoffMs(attempt: number): number {
 
 function describeFetchError(err: unknown): string {
   if (err instanceof Error) {
-    if (err.name === "TimeoutError" || err.name === "AbortError") return "request timed out";
+    if (err.name === "TimeoutError" || err.name === "AbortError" || /aborted due to timeout/i.test(err.message)) {
+      return "request timed out";
+    }
     const cause = (err as { cause?: { code?: string } }).cause?.code;
     return cause ? `${err.message} (${cause})` : err.message;
   }

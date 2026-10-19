@@ -29,7 +29,14 @@ function ticket(id: number, extra: Record<string, unknown> = {}): Ticket {
 
 /** In-memory Atera: /tickets pages, /tickets/lastmodified, /tickets/{id}. */
 function fakeAtera(initial: Ticket[]) {
-  const state = { tickets: new Map(initial.map((t) => [t.TicketID, t])), modified: [] as Ticket[], failAtPage: 0 };
+  const state = {
+    tickets: new Map(initial.map((t) => [t.TicketID, t])),
+    modified: [] as Ticket[],
+    failAtPage: 0,
+    /** Pages containing this ticket time out unless they are at most `heavyMaxSize` items. */
+    heavyId: 0,
+    heavyMaxSize: 5,
+  };
   const calls: string[] = [];
   const fetchImpl: FetchLike = async (input) => {
     const url = new URL(input);
@@ -46,7 +53,12 @@ function fakeAtera(initial: Ticket[]) {
       });
     if (url.pathname === "/api/v3/tickets") {
       if (state.failAtPage === page) return json({ Message: "boom" }, 400);
-      return paged([...state.tickets.values()].sort((a, b) => a.TicketID - b.TicketID));
+      const all = [...state.tickets.values()].sort((a, b) => a.TicketID - b.TicketID);
+      const slice = all.slice((page - 1) * size, page * size);
+      if (slice.some((t) => t.TicketID === state.heavyId) && size > state.heavyMaxSize) {
+        throw new DOMException("The operation was aborted due to timeout", "TimeoutError");
+      }
+      return paged(all);
     }
     if (url.pathname === "/api/v3/tickets/lastmodified") return paged(state.modified);
     const one = /^\/api\/v3\/tickets\/(\d+)$/.exec(url.pathname);
@@ -158,6 +170,47 @@ suite("TicketSync", () => {
     await sync.tick();
     expect(store.query("ORDER BY id", []).map((r) => r.id)).toEqual([1, 3]);
     expect(atera.calls).toContain("/api/v3/tickets/2?");
+  });
+
+  it("shrinks the page size around a page too heavy to download, then grows back", async () => {
+    const tickets = Array.from({ length: 300 }, (_, i) => ticket(i + 1));
+    const { store, sync, atera } = setup(tickets);
+    atera.state.heavyId = 77;
+    const logs: string[] = [];
+    (sync as unknown as { opts: { log: (m: string) => void } }).opts.log = (m) => logs.push(m);
+    await sync.tick();
+    expect(sync.status().lastError).toBeNull();
+    expect(sync.status().building).toBe(false);
+    expect(store.count()).toBe(300);
+    expect(logs.some((l) => l.includes("retrying with pages of 25"))).toBe(true);
+    expect(logs.some((l) => l.includes("retrying with pages of 10"))).toBe(true);
+    // Back to pages of 50 at the end.
+    const sizes = atera.calls.filter((c) => c.startsWith("/api/v3/tickets?")).map((c) => new URLSearchParams(c.split("?")[1]).get("itemsInPage"));
+    expect(sizes.at(-1)).toBe("50");
+  });
+
+  it("skips a ticket that cannot be downloaded even alone", async () => {
+    const { store, sync, atera } = setup(Array.from({ length: 60 }, (_, i) => ticket(i + 1)));
+    atera.state.heavyId = 7;
+    atera.state.heavyMaxSize = 0;
+    await sync.tick();
+    expect(sync.status().building).toBe(false);
+    expect(store.count()).toBe(59);
+    expect(store.query("WHERE id = 7", [])).toHaveLength(0);
+  });
+
+  it("resumes a 0.2.1 run from its page counter", async () => {
+    const tickets = Array.from({ length: 120 }, (_, i) => ticket(i + 1));
+    const { store, sync, atera } = setup(tickets);
+    store.setMeta("full_run_id", "old-run");
+    store.setMeta("full_run_started_at", "2026-10-01T09:00:00.000Z");
+    store.setMeta("full_next_page", 2);
+    expect(sync.status().fullProgress).toEqual({ page: 2, totalPages: null });
+    await sync.tick();
+    const firstCall = atera.calls.find((c) => c.startsWith("/api/v3/tickets?"))!;
+    expect(firstCall).toContain("page=2&itemsInPage=50");
+    expect(sync.status().building).toBe(false);
+    expect(store.meta("full_next_page")).toBeNull();
   });
 
   it("lets only one process sync a shared index", async () => {

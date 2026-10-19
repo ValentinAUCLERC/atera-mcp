@@ -20,6 +20,7 @@ async function openIndex(config: Config, client: AteraClient): Promise<ToolConte
     requestsPerMinute: config.index.requestsPerMinute,
     incrementalMs: config.index.incrementalMinutes * 60_000,
     fullMs: config.index.fullMinutes * 60_000,
+    requestTimeoutMs: config.index.requestTimeoutMs,
     log,
   });
   sync.start();

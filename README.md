@@ -38,11 +38,11 @@ ATERA_API_KEY=your-key npx -y atera-mcp
 }
 ```
 
-Pin a version with `atera-mcp@0.2.1`. Without npm access, the tarball attached to each GitHub release works too, and so does git (slower: it builds on install):
+Pin a version with `atera-mcp@0.2.2`. Without npm access, the tarball attached to each GitHub release works too, and so does git (slower: it builds on install):
 
 ```bash
-npx -y https://github.com/ValentinAUCLERC/atera-mcp/releases/download/v0.2.1/atera-mcp-0.2.1.tgz
-npx -y github:ValentinAUCLERC/atera-mcp#v0.2.1
+npx -y https://github.com/ValentinAUCLERC/atera-mcp/releases/download/v0.2.2/atera-mcp-0.2.2.tgz
+npx -y github:ValentinAUCLERC/atera-mcp#v0.2.2
 ```
 
 ### From source
@@ -69,6 +69,7 @@ ATERA_API_KEY=your-key node dist/index.js
 | `ATERA_SYNC_RPM` | `300` | Max Atera requests per minute used by the index sync (capped at 600; Atera allows ~700 for the whole account). |
 | `ATERA_SYNC_INTERVAL_MIN` | `5` | Incremental sync period (tickets modified since the last sync). |
 | `ATERA_SYNC_FULL_MIN` | `60` | Full reconciliation period (re-reads every ticket, removes deleted ones). |
+| `ATERA_SYNC_TIMEOUT_MS` | `120000` | Timeout of one sync request, download included. `/tickets` pages embed the first comment of each ticket and can be several MB. |
 | `ATERA_BASE_URL` | `https://app.atera.com/api/v3` | API base URL (tests, proxies). |
 
 Example for a helpdesk assistant that only needs tickets and who's who:
@@ -157,7 +158,7 @@ Atera's API returns at most 50 tickets per call and can only filter tickets by s
 
 How it stays up to date:
 
-1. **Initial build**, in the background on first start: walks every page of `/tickets` at `ATERA_SYNC_RPM`. 40,000 tickets = 800 requests ≈ 3 minutes at the default rate. It is resumable: if the process stops, it continues from the last page. Until it completes, the stats tools answer "index being built (page x / y)" instead of failing.
+1. **Initial build**, in the background on first start: walks every page of `/tickets` at `ATERA_SYNC_RPM`. 40,000 tickets = 800 requests ≈ 3 minutes at the default rate. It is resumable: if the process stops, it continues where it was. When a page is too heavy to download in time (descriptions with inline images…), the page size shrinks (50 → 25 → 10 → 5 → 1) around it, then grows back; a single ticket that still cannot be downloaded is skipped and logged. Until it completes, the stats tools answer "index being built (page x / y)" instead of failing.
 2. **Incremental sync** every `ATERA_SYNC_INTERVAL_MIN`: `/tickets/lastmodified` since the last sync (with a 10-minute overlap). Usually 1 request. A stale index is also refreshed just before answering a question.
 3. **Full reconciliation** every `ATERA_SYNC_FULL_MIN`: re-reads everything, which also refreshes fields that do not bump the modification date. A ticket missing from the run is removed only after Atera confirms it is gone (HTTP 404).
 

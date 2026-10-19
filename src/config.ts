@@ -43,6 +43,7 @@ export type IndexConfig = {
   requestsPerMinute: number;
   incrementalMinutes: number;
   fullMinutes: number;
+  requestTimeoutMs: number;
 };
 
 export const DEFAULT_BASE_URL = "https://app.atera.com/api/v3";
@@ -89,6 +90,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       requestsPerMinute: Math.min(positive(env, "ATERA_SYNC_RPM", 300), 600),
       incrementalMinutes: positive(env, "ATERA_SYNC_INTERVAL_MIN", 5),
       fullMinutes: positive(env, "ATERA_SYNC_FULL_MIN", 60),
+      requestTimeoutMs: positive(env, "ATERA_SYNC_TIMEOUT_MS", 120_000),
     };
   }
 

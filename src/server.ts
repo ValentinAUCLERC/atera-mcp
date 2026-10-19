@@ -11,7 +11,7 @@ import { statsTools } from "./tools/stats.js";
 import { ticketTools } from "./tools/tickets.js";
 
 export const SERVER_NAME = "atera-mcp";
-export const SERVER_VERSION = "0.2.1";
+export const SERVER_VERSION = "0.2.2";
 
 export const ALL_TOOLS: readonly ToolDefinition[] = [
   ...ticketTools,
