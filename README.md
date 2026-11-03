@@ -61,6 +61,7 @@ ATERA_API_KEY=your-key node dist/index.js
 |---|---|---|
 | `ATERA_API_KEY` | — (required) | Atera API key. JWT tokens are sent as `Authorization: Bearer`, older keys as `X-API-KEY`. |
 | `ATERA_ACCESS` | `read` | `read` = read tools only (32, +3 stats tools with the index), `write` = + create/update/comment/resolve (+10), `full` = + delete (+5). |
+| `ATERA_TECHNICIAN_EMAIL` | — | Default author of ticket comments (an existing Atera technician). See [Comment author](#comment-author). |
 | `ATERA_TOOLSETS` | all | Comma-separated subset to expose fewer tools: `account, customers, contacts, agents, alerts, tickets, stats, contracts, knowledge, billing, customfields, devices, departments, rates`. |
 | `ATERA_TIMEOUT_MS` | `30000` | Timeout of one HTTP call to Atera. |
 | `ATERA_MAX_RESULT_CHARS` | `25000` | Max size of one tool result. Longer lists are trimmed (whole items, with `itemsOmitted`) instead of being cut mid-JSON by the client. |
@@ -152,6 +153,27 @@ Errors (`isError: true`):
 
 `code` is one of `invalid_argument`, `unauthorized`, `forbidden`, `not_found`, `rate_limited`, `upstream_error`, `network_error`.
 
+## Comment author
+
+Atera API keys belong to the account, not to a person, so Atera needs every ticket comment to name an existing technician (otherwise it answers `404 Invalid input`). `add_ticket_comment` picks the author in this order:
+
+1. The user declared by the MCP client in the `tools/call` request: `_meta.user.email`. A chat app that knows who is logged in can sign comments as that person. The model cannot override it, so text inside a ticket can't make the server sign as someone else.
+2. `technicianId` / `technicianEmail` passed by the model.
+3. `ATERA_TECHNICIAN_EMAIL`.
+
+With none of them, the tool returns an error without calling Atera.
+
+```json
+{
+  "method": "tools/call",
+  "params": {
+    "name": "add_ticket_comment",
+    "arguments": { "ticketId": 123, "comment": "Called the user" },
+    "_meta": { "user": { "email": "alice@example.com" } }
+  }
+}
+```
+
 ## Ticket index and statistics
 
 Atera's API returns at most 50 tickets per call and can only filter tickets by status and customer. Computing statistics by paging through the API from a chat is slow, expensive in tokens and gives wrong numbers. With `ATERA_CACHE_DIR` set, the server keeps a local SQLite copy of every ticket's **metadata** (no comment text) and answers statistics from it.
@@ -175,7 +197,7 @@ The index lives in the MCP process: the server must stay up for periodic syncs t
 - Atera allows about 700 requests per minute per account. `find_*` tools cost one request per scanned page (10 by default, 40 max). The index sync stays under `ATERA_SYNC_RPM`.
 - Updates use Atera's partial update endpoints: only the fields you pass are sent.
 - The API key never appears in tool results or logs. Logs go to stderr (stdout is the MCP channel).
-- Endpoints and payloads follow Atera's published Swagger for API v3. Some write payloads (ticket comments in particular) are not precisely documented by Atera: if one of them misbehaves on your account, please open an issue with the error envelope.
+- Endpoints and payloads follow Atera's published Swagger for API v3. The spec is public: the developer portal (https://api.atera.com/devportal) loads it from `https://api.atera.com/proxy/publicapi/v3/openapi`. If a write misbehaves on your account, please open an issue with the error envelope.
 
 ## Development
 

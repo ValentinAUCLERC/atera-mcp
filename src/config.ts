@@ -35,6 +35,8 @@ export type Config = {
   maxResultChars: number;
   /** Local ticket index for stats; null = disabled. */
   index: IndexConfig | null;
+  /** Default author of ticket comments (ATERA_TECHNICIAN_EMAIL); null = none. */
+  technicianEmail: string | null;
 };
 
 export type IndexConfig = {
@@ -49,6 +51,8 @@ export type IndexConfig = {
 export const DEFAULT_BASE_URL = "https://app.atera.com/api/v3";
 
 export class ConfigError extends Error {}
+
+export const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const apiKey = (env.ATERA_API_KEY ?? "").trim();
@@ -94,6 +98,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     };
   }
 
+  const technicianEmail = (env.ATERA_TECHNICIAN_EMAIL ?? "").trim();
+  if (technicianEmail !== "" && !EMAIL.test(technicianEmail)) {
+    throw new ConfigError(`ATERA_TECHNICIAN_EMAIL is not a valid email address (got "${technicianEmail}").`);
+  }
+
   return {
     apiKey,
     baseUrl,
@@ -102,6 +111,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     toolsets,
     maxResultChars,
     index,
+    technicianEmail: technicianEmail === "" ? null : technicianEmail,
   };
 }
 
