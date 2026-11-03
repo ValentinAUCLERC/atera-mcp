@@ -7,7 +7,13 @@ import { MAX_ITEMS_IN_PAGE } from "../format.js";
 
 /** Local ticket index, present only when ATERA_CACHE_DIR is set. */
 export type StatsContext = { store: TicketStore; sync: TicketSync; timeZone: string };
-export type ToolContext = { stats: StatsContext | null };
+/**
+ * Who is acting, for tools that must name an Atera technician (ticket comments).
+ * `clientEmail` comes from the MCP client (`_meta.user.email` of the tools/call request)
+ * and wins over anything the model passes; `defaultEmail` is ATERA_TECHNICIAN_EMAIL.
+ */
+export type Actor = { clientEmail: string | null; defaultEmail: string | null };
+export type ToolContext = { stats: StatsContext | null; actor?: Actor };
 
 /** read = no side effect, write = create/update, delete = irreversible removal. */
 export type ToolAccess = "read" | "write" | "delete";

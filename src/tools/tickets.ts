@@ -1,6 +1,8 @@
 import { z } from "zod";
+import { AteraApiError } from "../client.js";
 import { compact, definedOnly, listPage } from "../format.js";
 import {
+  type ToolContext,
   defineTool,
   id,
   pagination,
@@ -221,7 +223,7 @@ export const ticketTools = [
     name: "add_ticket_comment",
     title: "Add a ticket comment",
     description:
-      "Add a comment to a ticket as a technician. Internal (not visible to the end user) unless internal=false. Only when the user explicitly asks for it.",
+      "Add a comment to a ticket as a technician. Internal (not visible to the end user) unless internal=false. Only when the user explicitly asks for it. The author is normally set by the server (logged-in user or configured technician): pass technicianId/technicianEmail only if the user names another author.",
     toolset: "tickets",
     access: "write",
     input: {
@@ -231,17 +233,29 @@ export const ticketTools = [
       technicianId: z.number().int().positive().optional().describe("Author technician contact ID"),
       technicianEmail: z.string().email().optional().describe("Author technician email"),
     },
-    handler: async (args, client) => {
+    handler: async (args, client, ctx) => {
+      const author = commentAuthor(args, ctx);
+      const internal = args.internal ?? true;
       const body = {
         CommentText: args.comment,
-        TechnicianCommentDetails: definedOnly({
-          TechnicianId: args.technicianId,
-          TechnicianEmail: args.technicianEmail,
-          IsInternal: args.internal ?? true,
-        }),
+        TechnicianCommentDetails: definedOnly({ ...author, IsInternal: internal }),
       };
-      const result = await client.post(`/tickets/${args.ticketId}/comments`, body);
-      return { added: true, ticketId: args.ticketId, internal: args.internal ?? true, result: compact(result) };
+      try {
+        const result = await client.post(`/tickets/${args.ticketId}/comments`, body);
+        return { added: true, ticketId: args.ticketId, internal, author: authorLabel(author), result: compact(result) };
+      } catch (err) {
+        // Atera answers 404 "Invalid input" both for an unknown ticket and for an author
+        // that is not one of its technicians: say so instead of a bare 404.
+        if (err instanceof AteraApiError && err.status === 404) {
+          throw new AteraApiError(
+            err.status,
+            err.code,
+            `${err.message}. Atera rejects a comment when the ticket does not exist or when the author (${authorLabel(author)}) is not an Atera technician.`,
+            err.retryable,
+          );
+        }
+        throw err;
+      }
     },
   }),
 
@@ -258,3 +272,28 @@ export const ticketTools = [
     },
   }),
 ];
+
+type CommentAuthor = { TechnicianId?: number; TechnicianEmail?: string };
+
+/**
+ * Atera needs an existing technician as author. Order: the user the MCP client says is
+ * logged in (cannot be overridden by the model, so a ticket's content can't make it sign
+ * as someone else), then the author the model passed, then ATERA_TECHNICIAN_EMAIL.
+ */
+export function commentAuthor(
+  args: { technicianId?: number; technicianEmail?: string },
+  ctx: ToolContext,
+): CommentAuthor {
+  if (ctx.actor?.clientEmail) return { TechnicianEmail: ctx.actor.clientEmail };
+  if (args.technicianId !== undefined || args.technicianEmail !== undefined) {
+    return definedOnly({ TechnicianId: args.technicianId, TechnicianEmail: args.technicianEmail }) as CommentAuthor;
+  }
+  if (ctx.actor?.defaultEmail) return { TechnicianEmail: ctx.actor.defaultEmail };
+  throw new Error(
+    "No comment author: Atera requires an existing technician. Pass technicianEmail (or technicianId), or set ATERA_TECHNICIAN_EMAIL on the server.",
+  );
+}
+
+function authorLabel(author: CommentAuthor): string {
+  return author.TechnicianEmail ?? `technician #${author.TechnicianId}`;
+}

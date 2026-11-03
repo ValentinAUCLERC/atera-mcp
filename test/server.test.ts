@@ -162,16 +162,91 @@ describe("MCP server", () => {
     expect(data.error.message).toContain("Ticket not found");
   });
 
-  it("add_ticket_comment posts an internal technician comment by default", async () => {
-    const { client, calls } = await connect({ ATERA_ACCESS: "write" }, () => undefined);
+  it("add_ticket_comment posts an internal comment signed by ATERA_TECHNICIAN_EMAIL by default", async () => {
+    const { client, calls } = await connect(
+      { ATERA_ACCESS: "write", ATERA_TECHNICIAN_EMAIL: "bot@example.com" },
+      () => undefined,
+    );
     const { data } = await call(client, "add_ticket_comment", { ticketId: 5, comment: "Called the user" });
-    expect(data).toMatchObject({ added: true, ticketId: 5, internal: true });
+    expect(data).toMatchObject({ added: true, ticketId: 5, internal: true, author: "bot@example.com" });
     expect(calls[0]).toMatchObject({ method: "POST" });
     expect(calls[0]!.url.pathname).toBe("/api/v3/tickets/5/comments");
     expect(calls[0]!.body).toEqual({
       CommentText: "Called the user",
-      TechnicianCommentDetails: { IsInternal: true },
+      TechnicianCommentDetails: { TechnicianEmail: "bot@example.com", IsInternal: true },
     });
+  });
+
+  it("add_ticket_comment refuses to call Atera without any author", async () => {
+    const { client, calls } = await connect({ ATERA_ACCESS: "write" }, () => undefined);
+    const res = await call(client, "add_ticket_comment", { ticketId: 5, comment: "x" });
+    expect(res.isError).toBe(true);
+    expect(res.data.error.message).toContain("ATERA_TECHNICIAN_EMAIL");
+    expect(calls).toHaveLength(0);
+  });
+
+  it("add_ticket_comment uses the author passed by the model over the configured default", async () => {
+    const { client, calls } = await connect(
+      { ATERA_ACCESS: "write", ATERA_TECHNICIAN_EMAIL: "bot@example.com" },
+      () => undefined,
+    );
+    await call(client, "add_ticket_comment", { ticketId: 5, comment: "x", technicianId: 12 });
+    expect(calls[0]!.body).toEqual({
+      CommentText: "x",
+      TechnicianCommentDetails: { TechnicianId: 12, IsInternal: true },
+    });
+  });
+
+  it("add_ticket_comment signs as the user from _meta, whatever the model passes", async () => {
+    const { client, calls } = await connect(
+      { ATERA_ACCESS: "write", ATERA_TECHNICIAN_EMAIL: "bot@example.com" },
+      () => undefined,
+    );
+    const res = (await client.callTool({
+      name: "add_ticket_comment",
+      arguments: { ticketId: 5, comment: "x", technicianEmail: "boss@example.com", internal: false },
+      _meta: { user: { email: "alice@example.com", name: "Alice" } },
+    })) as { content: { text: string }[] };
+    expect(JSON.parse(res.content[0]!.text)).toMatchObject({ author: "alice@example.com", internal: false });
+    expect(calls[0]!.body).toEqual({
+      CommentText: "x",
+      TechnicianCommentDetails: { TechnicianEmail: "alice@example.com", IsInternal: false },
+    });
+  });
+
+  it("add_ticket_comment ignores a malformed _meta user", async () => {
+    const { client, calls } = await connect(
+      { ATERA_ACCESS: "write", ATERA_TECHNICIAN_EMAIL: "bot@example.com" },
+      () => undefined,
+    );
+    await client.callTool({
+      name: "add_ticket_comment",
+      arguments: { ticketId: 5, comment: "x" },
+      _meta: { user: { email: "not an email" } },
+    });
+    expect(calls[0]!.body).toMatchObject({ TechnicianCommentDetails: { TechnicianEmail: "bot@example.com" } });
+  });
+
+  it("add_ticket_comment explains Atera's 404 Invalid input", async () => {
+    const { client } = await connect(
+      { ATERA_ACCESS: "write" },
+      () => new Response(JSON.stringify({ Message: "Invalid input" }), { status: 404 }),
+    );
+    const res = await call(client, "add_ticket_comment", {
+      ticketId: 5,
+      comment: "x",
+      technicianEmail: "nobody@example.com",
+    });
+    expect(res.isError).toBe(true);
+    expect(res.data.error.status).toBe(404);
+    expect(res.data.error.message).toContain("nobody@example.com");
+    expect(res.data.error.message).toContain("not an Atera technician");
+  });
+
+  it("rejects an invalid ATERA_TECHNICIAN_EMAIL", () => {
+    expect(() =>
+      loadConfig({ ATERA_API_KEY: "k", ATERA_TECHNICIAN_EMAIL: "nope" }),
+    ).toThrow(/ATERA_TECHNICIAN_EMAIL/);
   });
 
   it("update_ticket only sends the fields that were given", async () => {

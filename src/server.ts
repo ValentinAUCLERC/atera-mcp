@@ -1,17 +1,17 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { AteraApiError, AteraClient } from "./client.js";
-import type { AccessLevel, Config } from "./config.js";
+import { EMAIL, type AccessLevel, type Config } from "./config.js";
 import { serializeResult } from "./format.js";
 import { agentTools, alertTools } from "./tools/agents.js";
-import type { ToolAccess, ToolContext, ToolDefinition } from "./tools/common.js";
+import type { Actor, ToolAccess, ToolContext, ToolDefinition } from "./tools/common.js";
 import { contactTools, customerTools } from "./tools/customers.js";
 import { otherTools } from "./tools/other.js";
 import { statsTools } from "./tools/stats.js";
 import { ticketTools } from "./tools/tickets.js";
 
 export const SERVER_NAME = "atera-mcp";
-export const SERVER_VERSION = "0.2.2";
+export const SERVER_VERSION = "0.2.3";
 
 export const ALL_TOOLS: readonly ToolDefinition[] = [
   ...ticketTools,
@@ -73,10 +73,24 @@ export function createServer(
           openWorldHint: true,
         },
       },
-      async (args: Record<string, unknown>) => runTool(tool, args, client, ctx, config.maxResultChars),
+      async (args: Record<string, unknown>, extra: { _meta?: Record<string, unknown> }) =>
+        runTool(tool, args, client, { ...ctx, actor: actorFrom(extra?._meta, config) }, config.maxResultChars),
     );
   }
   return server;
+}
+
+/**
+ * The acting user as declared by the MCP client in `_meta.user.email` (for example a
+ * chat app that knows who is logged in), plus the configured default technician.
+ */
+export function actorFrom(meta: Record<string, unknown> | undefined, config: Pick<Config, "technicianEmail">): Actor {
+  const user = meta?.user;
+  const email =
+    user && typeof user === "object" && typeof (user as { email?: unknown }).email === "string"
+      ? (user as { email: string }).email.trim()
+      : "";
+  return { clientEmail: EMAIL.test(email) ? email : null, defaultEmail: config.technicianEmail };
 }
 
 export async function runTool(
